@@ -13,21 +13,11 @@ import os
 import time
 
 ## Logging for TensorBoard
-def log(img, gt_img, Phase_var, G, snr, vgg_model, summary_writer, step, params, args):
+def log(img, gt_img, G, snr, vgg_model, summary_writer, step, params, args):
     # Metasurface simulation
-
-    if args.psf_mode == 'SIM_PSF':
-        solver.set_wavelengths(params, params['lambda_base'])
-        psfs_debug, psfs_conv_forward = solver.get_psfs(Phase_var * args.bound_val, params, conv_mode=args.conv, aug_rotate=args.aug_rotate)
-        psfs_conv_deconv = psfs_conv_forward
-        if args.offset:
-            # This allow for spatial sensitivity training
-            psfs_conv_forward = psfs_conv_forward[1:,:,:,:]
-            psfs_conv_deconv  = psfs_conv_deconv[:-1,:,:,:]
-            assert(psfs_conv_forward.shape[0] == psfs_conv_deconv.shape[0])
-    elif args.psf_mode == 'REAL_PSF':
+    if args.psf_mode == 'REAL_PSF':
         real_psf = np.load(args.real_psf)
-        real_psf = real_psf[0:1, :, :, :]
+        # real_psf = real_psf[0:1, :, :, :]
         real_psf = tf.constant(real_psf, dtype=tf.float32)
         real_psf = tf.image.resize_with_crop_or_pad(real_psf, params['psf_width'], params['psf_width'])
         real_psf = real_psf / tf.reduce_sum(real_psf, axis=(1,2), keepdims=True)
@@ -52,9 +42,9 @@ def log(img, gt_img, Phase_var, G, snr, vgg_model, summary_writer, step, params,
         tf.summary.image(name = 'Input/GT' , data=gt_img, step=step)
 
         if args.offset:
-            num_patches = np.size(params['theta_base']) - 1
+            num_patches = 3 - 1
         else:
-            num_patches = np.size(params['theta_base'])
+            num_patches = 3
         for i in range(num_patches):
             tf.summary.image(name = 'Output/Output_'+str(i), data=G_img[i:i+1,:,:,:], step=step)
             tf.summary.image(name = 'Blur/Blur_'+str(i), data=conv_image[i:i+1,:,:,:], step=step)
@@ -63,16 +53,14 @@ def log(img, gt_img, Phase_var, G, snr, vgg_model, summary_writer, step, params,
                 tf.summary.image(name = 'Debug/Debug_'+str(j)+'_'+str(i), data=debug[i:i+1,:,:,:] , step=step)
 
         # PSF
-        for i in range(np.size(params['theta_base'])):
+        for i in range(np.size(3)):#视场个数
             psf_patch = psfs_debug[i:i+1,:,:,:]
             tf.summary.image(name='PSF/PSF_'+str(i),
                                 data=psf_patch / tf.reduce_max(psf_patch), step=step)
-            for l in range(np.size(params['lambda_base'])):
+            for l in range(3):#波长个数
                 psf_patch = psfs_debug[i:i+1,:,:,l:l+1]
-                tf.summary.image(name='PSF_'+str(params['lambda_base'][l])+'/PSF_'+str(i),
+                tf.summary.image(name='PSF_'+str("视场1")+'/PSF_'+str(i),
                                 data=psf_patch / tf.reduce_max(psf_patch), step=step)
-        for i in range(Phase_var.shape[0]):
-            tf.summary.scalar(name = 'Phase/Phase_'+str(i), data=Phase_var[i], step=step)
 
         # Metrics
         tf.summary.scalar(name = 'metrics/G_PSNR', data = G_metrics['PSNR'], step=step)
@@ -87,22 +75,13 @@ def log(img, gt_img, Phase_var, G, snr, vgg_model, summary_writer, step, params,
 
 
 ## Optimization Step
-def train_step(mode, img, gt_img, Phase_var, Phase_optimizer, G, G_optimizer, snr, vgg_model, params, args):
+def train_step(mode, img, gt_img, G, G_optimizer, snr, vgg_model, params, args):
     with tf.GradientTape() as G_tape:
         # Metasurface simulation
 
-        if args.psf_mode == 'SIM_PSF':
-            solver.set_wavelengths(params, params['lambda_base'])
-            psfs_debug, psfs_conv_forward = solver.get_psfs(Phase_var * args.bound_val, params, conv_mode=args.conv, aug_rotate=args.aug_rotate)
-            psfs_conv_deconv = psfs_conv_forward
-            if args.offset:
-                # This allow for spatial sensitivity training
-                psfs_conv_forward = psfs_conv_forward[1:,:,:,:]
-                psfs_conv_deconv  = psfs_conv_deconv[:-1,:,:,:]
-                assert(psfs_conv_forward.shape[0] == psfs_conv_deconv.shape[0])
-
-        elif args.psf_mode == 'REAL_PSF':
+        if args.psf_mode == 'REAL_PSF':
             real_psf = np.load(args.real_psf)
+            real_psf = real_psf[0:1, :, :, :]
             real_psf = tf.constant(real_psf, dtype=tf.float32)
             real_psf = tf.image.resize_with_crop_or_pad(real_psf, params['psf_width'], params['psf_width'])
             real_psf = real_psf / tf.reduce_sum(real_psf, axis=(1,2), keepdims=True)
@@ -122,11 +101,7 @@ def train_step(mode, img, gt_img, Phase_var, Phase_optimizer, G, G_optimizer, sn
         G_loss_val, G_loss_components, G_metrics = G_loss(G_img, gt_img, vgg_model, args)
 
     # Apply gradients
-    if mode == 'Phase':
-        Phase_gradients = G_tape.gradient(G_loss_val, Phase_var)#求梯度，G_LOSS_VAL对于Phase_var的梯度
-        Phase_optimizer.apply_gradients([(Phase_gradients, Phase_var)])#更新梯度
-        Phase_var.assign(tf.clip_by_value(Phase_var, -1.0, 1.0)) # Clipped to normalized phase range
-    elif mode == 'G':
+    if mode == 'G':
         G_vars = G.trainable_variables
         if args.snr_opt:
             G_vars.append(snr)
@@ -141,50 +116,7 @@ def train_step(mode, img, gt_img, Phase_var, Phase_optimizer, G, G_optimizer, sn
 def train(args):
     ## Metasurface
     params = solver.initialize_params(args)
-
-    if args.metasurface == 'random':
-        phase_initial = np.random.uniform(low = -args.bound_val, high = args.bound_val, size = params['num_coeffs'])
-    elif args.metasurface == 'zeros':
-        phase_initial = np.zeros(params['num_coeffs'], dtype=np.float32)
-    elif args.metasurface == 'single':
-        phase_initial = np.array([-np.pi * (params['Lx'] * params['pixelsX'] / 2) ** 2 / params['wavelength_nominal'] / params['f'], 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-    elif args.metasurface == 'neural':
-        # Best parameters with neural optimization
-        phase_initial = np.array([-0.3494864 , -0.00324192, -1.        , -1.        ,
-                                -1.        , -1.        , -1.        , -1.        ], dtype=np.float32)
-        phase_initial = phase_initial * args.bound_val  # <-- should be 1000
-        assert(args.bound_val == 5000)
-    else:
-        if args.metasurface == 'log_asphere':
-            phase_log = solver.log_asphere_phase(args.s1, args.s2, params)
-        elif args.metasurface == 'shifted_axicon':
-            phase_log = solver.shifted_axicon_phase(args.s1, args.s2, params)
-        elif args.metasurface == 'squbic':
-            phase_log = solver.squbic_phase(args.A, params)
-        elif args.metasurface == 'hyperboidal':
-            phase_log = solver.hyperboidal_phase(args.target_wavelength, params)
-        elif args.metasurface == 'cubic':
-            phase_log = solver.cubic_phase(args.alpha, args.target_wavelength, params) # Only for direct inference
-        else:
-            assert False, ("Unsupported metasurface mode")
-        params['general_phase'] = phase_log  # For direct phase inference
-        if args.use_general_phase:
-            assert(args.Phase_iters == 0)
-
-        # For optimization
-        lb = (params['pixelsX'] - params['pixels_aperture']) // 2 #(1429-1429)//2
-        ub = (params['pixelsX'] + params['pixels_aperture']) // 2#(1429+1429)//2
-        x = params['x_mesh'][lb : ub, 0] / (0.5 * params['pixels_aperture'] * params['Lx'])
-        phase_slice = phase_log[0, lb : ub, params['pixelsX'] // 2]
-        p_fit, _ = scp_opt.curve_fit(params['phase_func'], x, phase_slice, bounds=(-args.bound_val, args.bound_val))
-        phase_initial = p_fit
-    print('Initial Phase: {}'.format(phase_initial), flush=True)
     print('Image width: {}'.format(params['image_width']), flush=True)
-
-    # Normalize the phases within the bounds
-    phase_initial = phase_initial / args.bound_val
-    Phase_var = tf.Variable(phase_initial, dtype = tf.float32)#Phase是优化变量
-    Phase_optimizer = tf.keras.optimizers.Adam(args.Phase_lr, beta_1=args.Phase_beta1)#Phase的优化器设置
 
     # SNR term for deconvolution algorithm Winner滤波时SNR是优化变量
     snr = tf.Variable(args.snr_init, dtype=tf.float32)
@@ -193,11 +125,6 @@ def train(args):
     if args.psf_mode == 'REAL_PSF':
         assert(args.Phase_iters == 0)
 
-    # Convolution mode
-    if args.offset:
-        assert(len(args.batch_weights) == len(args.theta_base) - 1)
-    else:
-        assert(len(args.batch_weights) == len(args.theta_base))
     params['conv_fn'] = conv.convolution_tf(params, args)#将输入图像与PSF卷积
     params['deconv_fn'] = conv.deconvolution_tf(params, args)#反卷积
 
@@ -215,7 +142,7 @@ def train(args):
         vgg_model = None
 
     ## Saving the model 
-    checkpoint = tf.train.Checkpoint(Phase_optimizer=Phase_optimizer, Phase_var=Phase_var, G_optimizer=G_optimizer, G=G, snr=snr)
+    checkpoint = tf.train.Checkpoint(G_optimizer=G_optimizer, G=G, snr=snr)
 
     max_to_keep = args.max_to_keep#要保存的检查点的数量
     if args.max_to_keep == 0:
@@ -247,19 +174,19 @@ def train(args):
             test_batch = test_ds[0]
             img = test_batch[0]
             gt_img = test_batch[1]
-            log(img, gt_img, Phase_var, G, snr, vgg_model, summary_writer, step, params, args)
+            log(img, gt_img, G, snr, vgg_model, summary_writer, step, params, args)
         for _ in range(args.Phase_iters):
             img_batch = next(train_ds)
             img = img_batch[0]
             gt_img = img_batch[1]
-            train_step('Phase', img, gt_img, Phase_var, Phase_optimizer, G, G_optimizer, snr, vgg_model, params, args)
+            train_step('Phase', img, gt_img, G, G_optimizer, snr, vgg_model, params, args)
         for _ in range(args.G_iters):
             img_batch = next(train_ds)
             img = img_batch[0]
             gt_img = img_batch[1]
-            train_step('G', img, gt_img, Phase_var, Phase_optimizer, G, G_optimizer, snr, vgg_model, params, args)
+            train_step('G', img, gt_img,  G, G_optimizer, snr, vgg_model, params, args)
         print("Step time: {}\n".format(time.time() - start), flush=True)
-        print("Phase_var:", Phase_var)
+
 
 ## Entry point
 def main():
